@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>The 4D Cat</title>
+<style>
+  :root{--bg:#101116;--fg:#e8e8ee;--mute:#8a8a96;--acc:#e0a46a;--btn:#2a2c36}
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--fg);font-family:-apple-system,"Helvetica Neue",Arial,sans-serif}
+  body{display:flex;flex-direction:column;align-items:center;padding:16px 0 32px;min-height:100vh}
+  h1{font-size:clamp(22px,6vw,30px);font-weight:600;margin:4px 0 4px;letter-spacing:1px;text-align:center;padding:0 12px}
+  .sub{padding:0 14px;font-size:clamp(13px,3.6vw,16px);color:var(--mute);margin-bottom:10px;text-align:center;line-height:1.6}
+  #wrap{position:relative;width:min(100vw,1100px,calc((100vh - 300px)*1.64));display:flex;touch-action:none;cursor:grab;border-radius:12px;overflow:hidden;background:var(--bg)}
+  .pane{flex:1;position:relative}
+  .pane+.pane{border-left:1px solid #2d2d33}
+  .pane h2{margin:10px 0 2px;font-size:clamp(13px,3.6vw,21px);font-weight:500;text-align:center}
+  .pane p{margin:0;font-size:clamp(10px,2.8vw,14px);color:var(--mute);text-align:center;line-height:1.4;padding:0 4px}
+  canvas{width:100%;aspect-ratio:460/560;display:block}
+  #msg{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--fg);font-size:15px;text-align:center;padding:20px;background:rgba(16,17,22,.82)}
+  #msg small{color:var(--mute);font-size:13px}
+  .ctrl{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;justify-content:center;padding:0 12px}
+  button,.upl{height:38px;padding:0 18px;border-radius:19px;border:0;font-size:14px;font-weight:400;letter-spacing:.2px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;font-family:inherit}
+  #auto{background:var(--acc);color:#1a1208}
+  #auto.on{background:var(--btn);color:var(--fg)}
+  #reset,.upl,.sq,#adj{background:var(--btn);color:var(--fg)}
+  #adj.on{background:var(--acc);color:#1a1208}
+  .sq{width:38px;padding:0;font-size:18px}
+  .upl input{display:none}
+  .seg{display:flex;background:var(--btn);border-radius:25px;padding:4px;height:50px}
+  .seg button{height:42px;padding:0 18px;border-radius:21px;background:transparent;color:var(--mute);font-size:15px}
+  .seg button.on{background:#43465a;color:var(--fg)}
+  .note{margin-top:12px;font-size:13px;color:var(--mute);text-align:center;line-height:1.6;padding:0 16px}
+  .gal{width:min(100vw,1100px);margin-top:22px;padding:0 14px}
+  .gal h3{font-size:13px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:var(--mute);margin:0 0 10px}
+  .row{display:flex;gap:12px;overflow-x:auto;padding-bottom:6px}
+  .card{flex:none;width:112px;cursor:pointer;text-align:left;background:none;border:0;padding:0;height:auto;color:var(--fg);font-weight:400;display:flex;flex-direction:column;align-items:stretch}
+  .card .th{width:112px;height:128px;border-radius:10px;background:#101116 center/150% no-repeat;border:1px solid #2a2c36;display:flex;align-items:center;justify-content:center;color:var(--mute);font-size:12px}
+  .card.on .th{border:1.5px solid var(--acc)}
+  .card .no{display:block;font-size:11px;color:var(--mute);margin-top:6px;letter-spacing:1px}
+  .card .nm{display:block;font-size:13px;margin-top:2px;line-height:1.3}
+  body.dragging #wrap{outline:2px dashed var(--acc);outline-offset:-6px}
+</style>
+</head>
+<body>
+<h1 id="title">The 4D Cat</h1>
+<div class="sub" id="sub">Drag to rotate in 4D</div>
+<div id="wrap">
+  <div class="pane"><h2>4D Projection</h2><p>Gray marks the slice</p><canvas id="cl"></canvas></div>
+  <div class="pane"><h2>3D Cross-Section</h2><p>What our world sees</p><canvas id="c"></canvas></div>
+  <div id="msg"><span id="msgt">Loading</span><small id="msgs"></small></div>
+</div>
+<div class="ctrl"><button id="auto">Auto</button><button id="reset">Reset</button><button id="adj">Adjust View</button></div>
+<div class="ctrl">
+  <label class="upl" id="uplb">Try Your Own 3D<input type="file" id="file" accept=".glb"></label>
+</div>
+<div class="note">Upload a GLB file, original and uncompressed.</div>
+<div class="gal"><h3>Gallery</h3><div class="row" id="row"></div></div>
+<script src="cloud.js"></script>
+<script src="thumbs.js" onerror=""></script>
+<script type="module">
+const $=id=>document.getElementById(id);
+const cv=$('c'),cl=$('cl'),msg=$('msg');
+function status(t,s){msg.style.display='flex';$('msgt').textContent=t;$('msgs').textContent=s||''}
+function hideStatus(){msg.style.display='none'}
+const gl=cv.getContext('webgl2',{antialias:false});
+const gl2=cl.getContext('webgl2',{antialias:false});
+if(!gl||!gl2){status('This browser does not support WebGL2');throw 0}
+const tick=()=>new Promise(r=>setTimeout(r,0));
+
+// ================= shaders =================
+const vs=`#version 300 es
+in vec2 p;out vec2 uv;void main(){uv=p;gl_Position=vec4(p,0,1);}`;
+const fs=`#version 300 es
+precision highp float;precision highp sampler3D;
+in vec2 uv;out vec4 o;
+uniform sampler3D vol;uniform vec3 lo,hi,dims;
+uniform vec3 cent[7];uniform vec3 drift[7];uniform float erode[7];
+uniform mat4 R;uniform float w0;uniform mat3 cam;uniform float dist,foc,gray,yoff,alpha;
+vec3 gXo;
+float field(vec3 p){
+  vec4 q=R*vec4(p,w0);vec3 X=q.xyz;float w=q.w;
+  float sw=0.,se=0.;vec3 D=vec3(0);
+  for(int i=0;i<7;i++){vec3 d=X-cent[i];float k=exp(-dot(d,d)/0.2048);sw+=k;D+=k*drift[i];se+=k*erode[i];}
+  sw+=1e-12;D/=sw;se/=sw;
+  float g=w*abs(w)*0.75+0.2*w;
+  vec3 Xo=X-D*g;gXo=Xo;
+  vec3 t=((Xo-lo)/(hi-lo)*(dims-1.)+0.5)/dims;
+  float s=1.;
+  if(all(greaterThanEqual(t,vec3(0)))&&all(lessThanEqual(t,vec3(1))))s=texture(vol,t).a*0.9-0.3;
+  return max(s+w*w*0.16*se,abs(w)-1.08);
+}
+void main(){
+  vec3 bg=vec3(16,17,22)/255.;
+  vec3 ro=cam*vec3(0,0,-dist);
+  vec3 rd=normalize(cam*vec3(-uv.x*230./foc,(uv.y*280.+yoff)/foc,1.));
+  float b=dot(ro,rd),c=dot(ro,ro)-7.6;float h=b*b-c;
+  if(h<0.){if(gray>0.5)discard;o=vec4(bg,1);gl_FragDepth=gl_FragCoord.z;return;}
+  h=sqrt(h);float t=-b-h,t1=-b+h;
+  bool hit=false;float d;
+  for(int i=0;i<300;i++){
+    d=field(ro+rd*t);
+    if(d<0.0015){hit=true;break;}
+    t+=max(d*0.55,0.004);
+    if(t>t1)break;
+  }
+  if(!hit){if(gray>0.5)discard;o=vec4(bg,1);gl_FragDepth=gl_FragCoord.z;return;}
+  float ta=t-max(d*0.55,0.004),tb=t;
+  for(int i=0;i<6;i++){float tm=(ta+tb)*.5;if(field(ro+rd*tm)<0.)tb=tm;else ta=tm;}
+  vec3 p=ro+rd*tb;
+  float e=0.6*(hi.x-lo.x)/dims.x;
+  vec3 n=normalize(vec3(1,-1,-1)*field(p+vec3(1,-1,-1)*e)+vec3(-1,-1,1)*field(p+vec3(-1,-1,1)*e)
+        +vec3(-1,1,-1)*field(p+vec3(-1,1,-1)*e)+vec3(1,1,1)*field(p+vec3(1,1,1)*e));
+  field(p);
+  vec3 tt=((gXo-lo)/(hi-lo)*(dims-1.)+0.5)/dims;
+  vec3 col=texture(vol,clamp(tt,0.,1.)).rgb;
+  vec3 L=normalize(vec3(0.4,0.8,0.45));
+  float sh=(0.58+0.47*abs(dot(n,L)))*1.05;
+  float rim=pow(1.-abs(dot(n,-rd)),3.)*0.12;
+  if(gray>0.5)col=vec3(212,212,218)/255.;
+  vec3 ev=transpose(cam)*(p*(7.0/dist));
+  gl_FragDepth=gray>0.5?clamp(((ev.z+4.)/10.+1.)*0.5,0.,1.):gl_FragCoord.z;
+  o=vec4(clamp(col*sh+rim,0.,1.),gray>0.5?alpha:1.);
+}`;
+let CAM,CAMF;
+function camMat(y,p){const cy=Math.cos(y),sy=Math.sin(y),cp=Math.cos(p),sp=Math.sin(p);
+  const Ry=[[cy,0,sy],[0,1,0],[-sy,0,cy]],Rp=[[1,0,0],[0,cp,-sp],[0,sp,cp]];
+  const M=[[0,0,0],[0,0,0],[0,0,0]];for(let i=0;i<3;i++)for(let j=0;j<3;j++)for(let k=0;k<3;k++)M[i][j]+=Rp[i][k]*Ry[k][j];
+  CAM=M;CAMF=[M[0][0],M[0][1],M[0][2],M[1][0],M[1][1],M[1][2],M[2][0],M[2][1],M[2][2]];}
+camMat(-0.55,-0.32);
+function compile(g,vsrc,fsrc){
+  const mk=(t,s)=>{const x=g.createShader(t);g.shaderSource(x,s);g.compileShader(x);if(!g.getShaderParameter(x,g.COMPILE_STATUS)){status('Shader error',g.getShaderInfoLog(x));throw 0}return x};
+  const pr=g.createProgram();g.attachShader(pr,mk(g.VERTEX_SHADER,vsrc));g.attachShader(pr,mk(g.FRAGMENT_SHADER,fsrc));g.linkProgram(pr);return pr}
+function mkRay(g,dist,foc,gray,yoff){
+  const pr=compile(g,vs,fs);g.useProgram(pr);
+  const vao=g.createVertexArray();g.bindVertexArray(vao);
+  const buf=g.createBuffer();g.bindBuffer(g.ARRAY_BUFFER,buf);g.bufferData(g.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),g.STATIC_DRAW);
+  const loc=g.getAttribLocation(pr,'p');g.enableVertexAttribArray(loc);g.vertexAttribPointer(loc,2,g.FLOAT,false,0,0);
+  g.bindVertexArray(null);
+  const tex=g.createTexture();
+  const U=n=>g.getUniformLocation(pr,n);
+  g.uniform1i(U('vol'),0);g.uniform1f(U('w0'),0);g.uniform1f(U('dist'),dist);g.uniform1f(U('foc'),foc);g.uniform1f(U('gray'),gray);g.uniform1f(U('yoff'),yoff);
+  g.uniformMatrix3fv(U('cam'),false,CAMF);
+  return {
+    setVolume(V,data){g.useProgram(pr);g.activeTexture(g.TEXTURE0);g.bindTexture(g.TEXTURE_3D,tex);g.pixelStorei(g.UNPACK_ALIGNMENT,1);
+      const [nx,ny,nz]=V.dims;g.texImage3D(g.TEXTURE_3D,0,g.RGBA8,nx,ny,nz,0,g.RGBA,g.UNSIGNED_BYTE,data);
+      for(const k of [g.TEXTURE_MIN_FILTER,g.TEXTURE_MAG_FILTER])g.texParameteri(g.TEXTURE_3D,k,g.LINEAR);
+      for(const k of [g.TEXTURE_WRAP_S,g.TEXTURE_WRAP_T,g.TEXTURE_WRAP_R])g.texParameteri(g.TEXTURE_3D,k,g.CLAMP_TO_EDGE);
+      g.uniform3fv(U('lo'),V.lo);g.uniform3fv(U('hi'),V.hi);g.uniform3fv(U('dims'),V.dims);
+      g.uniform3fv(U('cent'),V.cent.flat());g.uniform3fv(U('drift'),V.drift.flat());g.uniform1fv(U('erode'),V.erode);},
+    setCam(){g.useProgram(pr);g.uniformMatrix3fv(U('cam'),false,CAMF)},
+    draw(T,a){g.useProgram(pr);g.activeTexture(g.TEXTURE0);g.bindTexture(g.TEXTURE_3D,tex);g.uniform1f(U('alpha'),a===undefined?1:a);g.bindVertexArray(vao);g.uniformMatrix4fv(U('R'),false,T);g.drawArrays(g.TRIANGLE_STRIP,0,4);g.bindVertexArray(null);}};
+}
+const rayR=mkRay(gl,7.0,700.,0.,0.);
+const rayL=mkRay(gl2,7.0/0.8,720.,1.,0.);
+
+// left point cloud
+const vs2=`#version 300 es
+in vec4 q;uniform mat4 R;uniform mat3 cam;uniform float ps;out vec3 vc;
+void main(){
+  vec4 v=transpose(R)*q;
+  float k4=2.4/(3.0-v.w*0.9);
+  vec3 e=transpose(cam)*(v.xyz*k4);
+  float k=720./(e.z+7.);
+  gl_Position=vec4(-e.x*k/230.,(e.y*k)/280.,(e.z+4.)/10.,1.);
+  float t=clamp((v.w/1.05+1.)/2.,0.,1.);
+  vc=mix(vec3(255,165,90),vec3(90,200,255),t)*0.75/255.;gl_PointSize=ps;
+}`;
+const fs2=`#version 300 es
+precision mediump float;in vec3 vc;out vec4 o;void main(){o=vec4(vc,0.9);}`;
+const pr2=compile(gl2,vs2,fs2);
+const pvao=gl2.createVertexArray(),pb=gl2.createBuffer();let NP=0;
+gl2.bindVertexArray(pvao);gl2.bindBuffer(gl2.ARRAY_BUFFER,pb);
+const lq=gl2.getAttribLocation(pr2,'q');gl2.enableVertexAttribArray(lq);gl2.vertexAttribPointer(lq,4,gl2.FLOAT,false,0,0);
+gl2.bindVertexArray(null);gl2.enable(gl2.DEPTH_TEST);
+function setCloud(P32){gl2.bindBuffer(gl2.ARRAY_BUFFER,pb);gl2.bufferData(gl2.ARRAY_BUFFER,P32,gl2.STATIC_DRAW);NP=P32.length/4}
+function drawLeft(T){gl2.useProgram(pr2);
+  gl2.uniformMatrix4fv(gl2.getUniformLocation(pr2,'R'),false,T);
+  gl2.uniformMatrix3fv(gl2.getUniformLocation(pr2,'cam'),false,CAMF);
+  gl2.uniform1f(gl2.getUniformLocation(pr2,'ps'),Math.max(2.,cl.width/150));
+  gl2.clearColor(16/255,17/255,22/255,1);gl2.clear(gl2.COLOR_BUFFER_BIT|gl2.DEPTH_BUFFER_BIT);
+  gl2.enable(gl2.BLEND);gl2.blendFunc(gl2.SRC_ALPHA,gl2.ONE_MINUS_SRC_ALPHA);
+  gl2.depthFunc(gl2.LEQUAL);gl2.depthMask(true);
+  gl2.bindVertexArray(pvao);gl2.drawArrays(gl2.POINTS,0,NP);gl2.bindVertexArray(null);
+  rayL.draw(T,1.0);
+  gl2.depthFunc(gl2.GREATER);gl2.depthMask(false);
+  rayL.draw(T,0.32);
+  gl2.depthFunc(gl2.LEQUAL);gl2.depthMask(true);gl2.disable(gl2.BLEND);}
+
+// ================= state, interaction =================
+let R=[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1];
+function rot(a,b,ang){const c=Math.cos(ang),s=Math.sin(ang);const N=R.slice();
+  for(let r=0;r<4;r++){const A=R[r*4+a],B=R[r*4+b];N[r*4+a]=A*c-B*s;N[r*4+b]=A*s+B*c}R=N;}
+function ortho(){for(let i=0;i<4;i++){for(let j=0;j<i;j++){let d=0;for(let r=0;r<4;r++)d+=R[r*4+i]*R[r*4+j];for(let r=0;r<4;r++)R[r*4+i]-=d*R[r*4+j]}let n=0;for(let r=0;r<4;r++)n+=R[r*4+i]**2;n=Math.sqrt(n);for(let r=0;r<4;r++)R[r*4+i]/=n}}
+let dirty=true,ready=false,quality='d';
+function size(){const dpr=Math.min(window.devicePixelRatio||1,quality==='d'?2:1.5);for(const [c,g] of [[cv,gl],[cl,gl2]]){const r=c.getBoundingClientRect();c.width=Math.round(r.width*dpr);c.height=Math.round(r.height*dpr);g.viewport(0,0,c.width,c.height)}dirty=true}
+window.addEventListener('resize',size);
+function draw(){const T=[];for(let c=0;c<4;c++)for(let r=0;r<4;r++)T.push(R[r*4+c]);rayR.draw(T);drawLeft(T);}
+let auto=false,drag=null;
+const wrap=$('wrap'),ab=$('auto');
+let adjusting=false;
+function setAdjust(a){adjusting=a;$('adj').textContent=a?'Done':'Adjust View';$('adj').classList.toggle('on',a);document.body.classList.toggle('adjusting',a);
+  $('sub').textContent=a?'Drag to set the starting view, then tap Done':'Drag to rotate in 4D';
+  if(a){setAuto(false);R=[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1];dirty=true}
+  else if(typeof items!=='undefined'&&items[sel]){items[sel].view=[VY,VP];snapThumb(items[sel]);setView(VY,VP);renderGallery()}}
+$('adj').onclick=()=>setAdjust(!adjusting);
+wrap.addEventListener('pointerdown',e=>{drag=[e.clientX,e.clientY];wrap.setPointerCapture(e.pointerId);setAuto(false)});
+wrap.addEventListener('pointermove',e=>{if(!drag)return;const k=2*Math.PI/wrap.clientWidth;
+  const dx=(e.clientX-drag[0])*k,dy=(e.clientY-drag[1])*k;drag=[e.clientX,e.clientY];
+  if(adjusting){setView(VY+dx,Math.max(-1.35,Math.min(1.35,VP-dy)));return}
+  rot(0,3,dx);rot(1,3,-dy);ortho();dirty=true});
+wrap.addEventListener('pointerup',()=>drag=null);wrap.addEventListener('pointercancel',()=>drag=null);
+function setAuto(a){if(a&&adjusting)setAdjust(false);auto=a;ab.textContent=a?'Pause':'Auto';ab.classList.toggle('on',a)}
+ab.onclick=()=>setAuto(!auto);
+$('reset').onclick=()=>{if(adjusting)setAdjust(false);R=[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1];dirty=true};
+let last=performance.now();
+function loop(t){const dt=Math.min(0.05,(t-last)/1000);last=t;
+  if(auto){rot(0,3,dt*0.55);rot(1,3,dt*0.37);rot(2,3,dt*0.23);ortho();dirty=true}
+  if(dirty&&ready){draw();dirty=false}
+  requestAnimationFrame(loop)}
+requestAnimationFrame(loop);
+
+// ================= data =================
+function b64(s){const r=atob(s);const a=new Uint8Array(r.length);for(let i=0;i<r.length;i++)a[i]=r.charCodeAt(i);return a}
+let VY=0.55,VP=-0.32;
+function setView(y,p){VY=y;VP=p;camMat(y,p);rayR.setCam();rayL.setCam();dirty=true}
+function applyVolume(V,data){rayR.setVolume(V,data);rayL.setVolume(V,data);dirty=true}
+let current='cat',model=null;   // model = cached surface samples of an uploaded file
+const catCloud=new Float32Array(b64(window.CLOUD_P).buffer);
+let catHD=null;
+function loadScript(src){return new Promise((res,rej)=>{const s=document.createElement('script');s.src=src;s.onload=res;s.onerror=rej;document.body.appendChild(s)})}
+async function showCat(){
+  if(quality==='d'){
+    if(!catHD){status('Loading','');await loadScript('vol_hd.js');catHD={V:window.VOLHD,data:b64(window.VOLHDB64)}}
+    applyVolume(catHD.V,catHD.data);
+  } else applyVolume(window.VOL,b64(window.VOLB64));
+  setCloud(catCloud);
+}
+
+// ================= upload pipeline =================
+function rng(seed){let a=seed>>>0;return()=>{a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function lin2srgb(c){return c<=0.0031308?12.92*c:1.055*Math.pow(c,1/2.4)-0.055}
+
+// ---- self-contained parsers: each returns parts {W,idx,n,uv,col,mats,tm}
+function mat4mul(a,b){const o=new Float64Array(16);for(let c=0;c<4;c++)for(let r=0;r<4;r++){let s=0;for(let k=0;k<4;k++)s+=a[k*4+r]*b[c*4+k];o[c*4+r]=s}return o}
+function trs(n){if(n.matrix)return Float64Array.from(n.matrix);
+  const t=n.translation||[0,0,0],q=n.rotation||[0,0,0,1],s=n.scale||[1,1,1];const [x,y,z,w]=q;
+  return Float64Array.from([(1-2*(y*y+z*z))*s[0],2*(x*y+z*w)*s[0],2*(x*z-y*w)*s[0],0,
+    2*(x*y-z*w)*s[1],(1-2*(x*x+z*z))*s[1],2*(y*z+x*w)*s[1],0,
+    2*(x*z+y*w)*s[2],2*(y*z-x*w)*s[2],(1-2*(x*x+y*y))*s[2],0,t[0],t[1],t[2],1])}
+async function parseGLB(buf){
+  const dv=new DataView(buf);if(dv.getUint32(0,true)!==0x46546C67)throw new Error('Only binary glTF (.glb) is supported');
+  let off=12,json=null,bin=null;
+  while(off<buf.byteLength){const len=dv.getUint32(off,true),type=dv.getUint32(off+4,true);
+    if(type===0x4E4F534A)json=JSON.parse(new TextDecoder().decode(new Uint8Array(buf,off+8,len)));else if(type===0x004E4942)bin=new Uint8Array(buf,off+8,len);off+=8+len}
+  const G=json;if((G.extensionsRequired||[]).some(e=>/draco|meshopt/i.test(e)))throw new Error('This GLB is compressed. Please upload the original, uncompressed file');
+  const CT={5120:[Int8Array,127],5121:[Uint8Array,255],5122:[Int16Array,32767],5123:[Uint16Array,65535],5125:[Uint32Array,0],5126:[Float32Array,0]};
+  const NC={SCALAR:1,VEC2:2,VEC3:3,VEC4:4,MAT4:16};
+  function acc(i){const a=G.accessors[i],bv=G.bufferViews[a.bufferView],[T,norm]=CT[a.componentType],nc=NC[a.type];
+    const base=bin.byteOffset+(bv.byteOffset||0)+(a.byteOffset||0),es=T.BYTES_PER_ELEMENT,stride=bv.byteStride||es*nc;
+    const out=new Float32Array(a.count*nc);const d=new DataView(bin.buffer);
+    const rd={5120:o=>d.getInt8(o),5121:o=>d.getUint8(o),5122:o=>d.getInt16(o,true),5123:o=>d.getUint16(o,true),5125:o=>d.getUint32(o,true),5126:o=>d.getFloat32(o,true)}[a.componentType];
+    for(let e=0;e<a.count;e++)for(let c=0;c<nc;c++){let v=rd(base+e*stride+c*es);if(a.normalized&&norm)v=Math.max(v/norm,-1);out[e*nc+c]=v}
+    return {data:out,nc}}
+  const texCache={};
+  async function tex(ti){if(ti===undefined)return null;if(texCache[ti]!==undefined)return texCache[ti];
+    try{const t=G.textures[ti],im=G.images[t.source],bv=G.bufferViews[im.bufferView];
+      const blob=new Blob([new Uint8Array(bin.buffer,bin.byteOffset+(bv.byteOffset||0),bv.byteLength)],{type:im.mimeType||'image/png'});
+      const bmp=await createImageBitmap(blob);texCache[ti]=texPixels({image:bmp,flipY:false})}catch(e){texCache[ti]=null}
+    return texCache[ti]}
+  const matCache={};
+  async function mat(mi){if(mi===undefined)return {c:[0.75,0.76,0.79],tex:null};if(matCache[mi])return matCache[mi];
+    const m=G.materials[mi],pb=m.pbrMetallicRoughness||{},f=pb.baseColorFactor||[1,1,1,1];
+    return matCache[mi]={c:[lin2srgb(f[0]),lin2srgb(f[1]),lin2srgb(f[2])],tex:await tex(pb.baseColorTexture&&pb.baseColorTexture.index)}}
+  const parts=[];
+  async function visit(ni,M){const n=G.nodes[ni],W=mat4mul(M,trs(n));
+    if(n.mesh!==undefined)for(const pr of G.meshes[n.mesh].primitives){if((pr.mode??4)!==4||pr.attributes.POSITION===undefined)continue;
+      const pos=acc(pr.attributes.POSITION).data,nv=pos.length/3,Wp=new Float32Array(nv*3);
+      for(let i=0;i<nv;i++){const x=pos[i*3],y=pos[i*3+1],z=pos[i*3+2];for(let r=0;r<3;r++)Wp[i*3+r]=W[r]*x+W[4+r]*y+W[8+r]*z+W[12+r]}
+      const idx=pr.indices!==undefined?Uint32Array.from(acc(pr.indices).data):null;
+      const uv=pr.attributes.TEXCOORD_0!==undefined?acc(pr.attributes.TEXCOORD_0).data:null;
+      let col=null;if(pr.attributes.COLOR_0!==undefined){const c=acc(pr.attributes.COLOR_0);col=new Float32Array(nv*3);for(let i=0;i<nv;i++)for(let d=0;d<3;d++)col[i*3+d]=lin2srgb(c.data[i*c.nc+d])}
+      const n_=idx?idx.length/3:nv/3;parts.push({W:Wp,idx,n:n_,uv,col,mats:[await mat(pr.material)],tm:new Uint16Array(n_)})}
+    for(const c of n.children||[])await visit(c,W)}
+  const I=Float64Array.from([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]);
+  const sc=G.scenes?G.scenes[G.scene||0].nodes:G.nodes.map((_,i)=>i);for(const ni of sc)await visit(ni,I);
+  return parts}
+function gray(){return {c:[0.75,0.76,0.79],tex:null}}
+function parseOBJ(text){const v=[],vc=[];const idx=[];let hasC=false;
+  for(const line of text.split('\n')){const t=line.trim().split(/\s+/);
+    if(t[0]==='v'){v.push(+t[1],+t[2],+t[3]);if(t.length>=7){vc.push(+t[4],+t[5],+t[6]);hasC=true}else vc.push(0.75,0.76,0.79)}
+    else if(t[0]==='f'){const f=t.slice(1).filter(Boolean).map(s=>{let i=parseInt(s.split('/')[0]);return i<0?v.length/3+i:i-1});for(let k=1;k+1<f.length;k++)idx.push(f[0],f[k],f[k+1])}}
+  if(!idx.length)throw new Error('No faces found in this OBJ');
+  return [{W:Float32Array.from(v),idx:Uint32Array.from(idx),n:idx.length/3,uv:null,col:hasC?Float32Array.from(vc):null,mats:[hasC?{c:[1,1,1],tex:null}:gray()],tm:new Uint16Array(idx.length/3)}]}
+function parseSTL(buf){const dv=new DataView(buf);const n=dv.getUint32(80,true);
+  if(84+n*50===buf.byteLength){const W=new Float32Array(n*9);for(let i=0;i<n;i++)for(let k=0;k<9;k++)W[i*9+k]=dv.getFloat32(84+i*50+12+k*4,true);
+    return [{W,idx:null,n,uv:null,col:null,mats:[gray()],tm:new Uint16Array(n)}]}
+  const txt=new TextDecoder().decode(buf),W=[];const re=/vertex\s+(\S+)\s+(\S+)\s+(\S+)/g;let m;while((m=re.exec(txt)))W.push(+m[1],+m[2],+m[3]);
+  const nn=W.length/9;if(!nn)throw new Error('No triangles found in this STL');return [{W:Float32Array.from(W),idx:null,n:nn,uv:null,col:null,mats:[gray()],tm:new Uint16Array(nn)}]}
+function parsePLY(buf){const u8=new Uint8Array(buf);let he=0;const hdr=new TextDecoder().decode(u8.slice(0,Math.min(u8.length,8192)));he=hdr.indexOf('end_header');if(he<0)throw new Error('Invalid PLY header');
+  const head=hdr.slice(0,he).split('\n').map(s=>s.trim());let start=he+'end_header'.length;while(u8[start]===13||u8[start]===10){start++;if(u8[start-1]===10)break}
+  const fmt=head.find(l=>l.startsWith('format')).split(' ')[1];const els=[];
+  for(const l of head){const t=l.split(/\s+/);if(t[0]==='element')els.push({name:t[1],count:+t[2],props:[]});else if(t[0]==='property')els[els.length-1].props.push(t[1]==='list'?{list:true,ct:t[2],it:t[3],name:t[4]}:{type:t[1],name:t[2]})}
+  const SZ={char:1,uchar:1,int8:1,uint8:1,short:2,ushort:2,int16:2,uint16:2,int:4,uint:4,int32:4,uint32:4,float:4,float32:4,double:8,float64:8};
+  const dv=new DataView(buf);let o=start;const le=fmt!=='binary_big_endian';
+  const rd=t=>{let v;switch(t){case'char':case'int8':v=dv.getInt8(o);break;case'uchar':case'uint8':v=dv.getUint8(o);break;case'short':case'int16':v=dv.getInt16(o,le);break;case'ushort':case'uint16':v=dv.getUint16(o,le);break;
+    case'int':case'int32':v=dv.getInt32(o,le);break;case'uint':case'uint32':v=dv.getUint32(o,le);break;case'float':case'float32':v=dv.getFloat32(o,le);break;default:v=dv.getFloat64(o,le)}o+=SZ[t];return v};
+  let tok=null,ti=0;if(fmt==='ascii'){tok=new TextDecoder().decode(u8.slice(start)).trim().split(/\s+/)}
+  const next=t=>fmt==='ascii'?+tok[ti++]:rd(t);
+  let V=[],C=[],F=[];
+  for(const e of els){for(let i=0;i<e.count;i++){const rec={};for(const p of e.props){if(p.list){const n=next(p.ct);const a=[];for(let k=0;k<n;k++)a.push(next(p.it));rec[p.name]=a}else rec[p.name]=next(p.type)}
+    if(e.name==='vertex'){V.push(rec.x,rec.y,rec.z);if(rec.red!==undefined)C.push(rec.red/255,rec.green/255,rec.blue/255)}
+    else if(e.name==='face'){const f=rec.vertex_indices||rec.vertex_index||[];for(let k=1;k+1<f.length;k++)F.push(f[0],f[k],f[k+1])}}}
+  if(!F.length)throw new Error('This PLY has no faces');
+  return [{W:Float32Array.from(V),idx:Uint32Array.from(F),n:F.length/3,uv:null,col:C.length?Float32Array.from(C):null,mats:[C.length?{c:[1,1,1],tex:null}:gray()],tm:new Uint16Array(F.length/3)}]}
+async function parseFile(file){
+  const ext=file.name.split('.').pop().toLowerCase(),buf=await file.arrayBuffer();
+  if(ext==='glb')return parseGLB(buf);
+  throw new Error('Please upload a GLB file');
+}
+function texPixels(tex){
+  const img=tex&&tex.image;if(!img||!img.width)return null;
+  const s=Math.min(1,2048/Math.max(img.width,img.height));const w=Math.max(1,Math.round(img.width*s)),h=Math.max(1,Math.round(img.height*s));
+  const c=document.createElement('canvas');c.width=w;c.height=h;const x=c.getContext('2d');
+  try{x.drawImage(img,0,0,w,h);return {w,h,d:x.getImageData(0,0,w,h).data,flipY:tex.flipY}}catch(e){return null}
+}
+// sample N colored points on the surface, normalized like the cat
+async function sampleSurface(parts,N){
+  let NT=0;for(const p of parts)NT+=p.n;
+  if(!NT)throw new Error('No mesh found in this file');
+  // triangle table
+  const area=new Float64Array(NT);let k=0,tot=0;const ref=new Uint32Array(NT*2);
+  parts.forEach((p,pi)=>{for(let t=0;t<p.n;t++){const a=p.idx?p.idx[t*3]:t*3,b=p.idx?p.idx[t*3+1]:t*3+1,c=p.idx?p.idx[t*3+2]:t*3+2,W=p.W;
+    const ux=W[b*3]-W[a*3],uy=W[b*3+1]-W[a*3+1],uz=W[b*3+2]-W[a*3+2],vx=W[c*3]-W[a*3],vy=W[c*3+1]-W[a*3+1],vz=W[c*3+2]-W[a*3+2];
+    const cx=uy*vz-uz*vy,cy=uz*vx-ux*vz,cz=ux*vy-uy*vx;tot+=0.5*Math.hypot(cx,cy,cz);area[k]=tot;ref[k*2]=pi;ref[k*2+1]=t;k++}});
+  const P=new Float32Array(N*3),Nn=new Float32Array(N*3),C=new Uint8Array(N*3);const r=rng(11);
+  for(let s=0;s<N;s++){
+    const x=r()*tot;let lo=0,hi=NT-1;while(lo<hi){const m=(lo+hi)>>1;if(area[m]<x)lo=m+1;else hi=m}
+    const p=parts[ref[lo*2]],t=ref[lo*2+1],W=p.W;
+    const a=p.idx?p.idx[t*3]:t*3,b=p.idx?p.idx[t*3+1]:t*3+1,c=p.idx?p.idx[t*3+2]:t*3+2;
+    let r1=Math.sqrt(r()),r2=r();const wa=1-r1,wb=r1*(1-r2),wc=r1*r2;
+    for(let d=0;d<3;d++)P[s*3+d]=wa*W[a*3+d]+wb*W[b*3+d]+wc*W[c*3+d];
+    const ux=W[b*3]-W[a*3],uy=W[b*3+1]-W[a*3+1],uz=W[b*3+2]-W[a*3+2],vx=W[c*3]-W[a*3],vy=W[c*3+1]-W[a*3+1],vz=W[c*3+2]-W[a*3+2];
+    let nx=uy*vz-uz*vy,ny=uz*vx-ux*vz,nz=ux*vy-uy*vx;const nl=Math.hypot(nx,ny,nz)||1;Nn[s*3]=nx/nl;Nn[s*3+1]=ny/nl;Nn[s*3+2]=nz/nl;
+    const mi=p.mats[p.tm[t]]||p.mats[0];let col=[mi.c[0],mi.c[1],mi.c[2]];
+    if(mi.tex&&p.uv){const U=p.uv;let u=wa*U[a*2]+wb*U[b*2]+wc*U[c*2],vv=wa*U[a*2+1]+wb*U[b*2+1]+wc*U[c*2+1];
+      u-=Math.floor(u);vv-=Math.floor(vv);const T=mi.tex;const px=Math.min(T.w-1,Math.floor(u*T.w)),py=Math.min(T.h-1,Math.floor((T.flipY?1-vv:vv)*T.h));
+      const o=(py*T.w+px)*4;col=[col[0]*T.d[o]/255,col[1]*T.d[o+1]/255,col[2]*T.d[o+2]/255]}
+    else if(p.col){const Cc=p.col;for(let d=0;d<3;d++)col[d]*=wa*Cc[a*3+d]+wb*Cc[b*3+d]+wc*Cc[c*3+d]}
+    for(let d=0;d<3;d++)C[s*3+d]=Math.max(0,Math.min(255,Math.round(col[d]*255)));
+    if((s&16383)===0){status('Sampling the surface',Math.round(s/N*100)+'%');await tick()}
+  }
+  // normalize: center, major horizontal axis along x, largest extent = 3
+  let m=[0,0,0];for(let i=0;i<N;i++)for(let d=0;d<3;d++)m[d]+=P[i*3+d]/N;
+  let sxx=0,sxz=0,szz=0;for(let i=0;i<N;i++){const x=P[i*3]-m[0],z=P[i*3+2]-m[2];sxx+=x*x;sxz+=x*z;szz+=z*z}
+  // glTF models face +z; turn them 180 degrees so the front faces our camera
+  const ang=Math.PI,ca=Math.cos(ang),sa=Math.sin(ang);
+  const mn=[1e9,1e9,1e9],mx=[-1e9,-1e9,-1e9];
+  for(let i=0;i<N;i++){const x=P[i*3]-m[0],y=P[i*3+1]-m[1],z=P[i*3+2]-m[2];
+    P[i*3]=x*ca+z*sa;P[i*3+1]=y;P[i*3+2]=-x*sa+z*ca;
+    const nx=Nn[i*3],nz=Nn[i*3+2];Nn[i*3]=nx*ca+nz*sa;Nn[i*3+2]=-nx*sa+nz*ca;
+    for(let d=0;d<3;d++){mn[d]=Math.min(mn[d],P[i*3+d]);mx[d]=Math.max(mx[d],P[i*3+d])}}
+  const sc=3/Math.max(mx[0]-mn[0],mx[1]-mn[1],mx[2]-mn[2]);
+  const cy=(mn[1]+mx[1])/2;for(let i=0;i<N;i++)P[i*3+1]-=cy;
+  for(let i=0;i<N*3;i++)P[i]*=sc;
+  return {P,N:Nn,C,n:N};
+}
+// parts: k-means into 7 regions, each drifts its own way through w
+function makeParts(S){
+  const r=rng(5),K=7,sc=[1,1.2,0.8],M=Math.min(S.n,20000),step=S.n/M;
+  const X=new Float32Array(M*3);for(let i=0;i<M;i++){const j=Math.floor(i*step);for(let d=0;d<3;d++)X[i*3+d]=S.P[j*3+d]*sc[d]}
+  const c=[];c.push(Array.from(X.slice(0,3)));
+  const dmin=new Float32Array(M).fill(1e9);
+  while(c.length<K){const cc=c[c.length-1];let tot=0;for(let i=0;i<M;i++){const d=(X[i*3]-cc[0])**2+(X[i*3+1]-cc[1])**2+(X[i*3+2]-cc[2])**2;if(d<dmin[i])dmin[i]=d;tot+=dmin[i]}
+    let t=r()*tot,i=0;for(;i<M-1;i++){t-=dmin[i];if(t<=0)break}c.push([X[i*3],X[i*3+1],X[i*3+2]])}
+  const lab=new Uint8Array(M);
+  for(let it=0;it<20;it++){const s=c.map(()=>[0,0,0,0]);
+    for(let i=0;i<M;i++){let b=0,bd=1e9;for(let k=0;k<K;k++){const d=(X[i*3]-c[k][0])**2+(X[i*3+1]-c[k][1])**2+(X[i*3+2]-c[k][2])**2;if(d<bd){bd=d;b=k}}lab[i]=b;s[b][0]+=X[i*3];s[b][1]+=X[i*3+1];s[b][2]+=X[i*3+2];s[b][3]++}
+    for(let k=0;k<K;k++)if(s[k][3])c[k]=[s[k][0]/s[k][3],s[k][1]/s[k][3],s[k][2]/s[k][3]]}
+  const cent=c.map(v=>[v[0]/sc[0],v[1]/sc[1],v[2]/sc[2]]);
+  const gauss=()=>Math.sqrt(-2*Math.log(r()+1e-12))*Math.cos(2*Math.PI*r());
+  const drift=cent.map(v=>{const u=[v[0],v[1]+0.3,v[2]];const l=Math.hypot(...u)+1e-9;const s=0.7+0.4*r();return u.map(x=>(x/l+gauss()*0.45)*s)});
+  const erode=cent.map(()=>0.6+0.8*r());
+  return {cent,drift,erode};
+}
+// signed distance + color grid by seed propagation
+async function buildVolume(S,parts,res){
+  const P=S.P,Nn=S.N,C=S.C,n=S.n;
+  const mn=[1e9,1e9,1e9],mx=[-1e9,-1e9,-1e9];for(let i=0;i<n;i++)for(let d=0;d<3;d++){mn[d]=Math.min(mn[d],P[i*3+d]);mx[d]=Math.max(mx[d],P[i*3+d])}
+  const lo=mn.map(v=>v-0.25),ext=mx.map((v,d)=>v+0.25-lo[d]);
+  while(Math.ceil(ext[0]/res+1)*Math.ceil(ext[1]/res+1)*Math.ceil(ext[2]/res+1)>9e6)res*=1.1;
+  const dims=ext.map(e=>Math.ceil(e/res)+1),[nx,ny,nz]=dims,NV=nx*ny*nz;
+  const hi=lo.map((v,d)=>v+res*(dims[d]-1));
+  const near=new Int32Array(NV).fill(-1),dist=new Float32Array(NV).fill(1e9),inQ=new Uint8Array(NV),Q=new Int32Array(NV);let qh=0,qt=0,qn=0;
+  const push=v=>{if(inQ[v])return;inQ[v]=1;Q[qt]=v;qt=(qt+1)%NV;qn++};
+  for(let i=0;i<n;i++){const gi=Math.round((P[i*3]-lo[0])/res),gj=Math.round((P[i*3+1]-lo[1])/res),gk=Math.round((P[i*3+2]-lo[2])/res);
+    const v=gi+nx*(gj+ny*gk);const d=Math.hypot(lo[0]+gi*res-P[i*3],lo[1]+gj*res-P[i*3+1],lo[2]+gk*res-P[i*3+2]);if(d<dist[v]){dist[v]=d;near[v]=i}}
+  for(let v=0;v<NV;v++)if(near[v]>=0)push(v);
+  const off=[];for(let a=-1;a<=1;a++)for(let b=-1;b<=1;b++)for(let c=-1;c<=1;c++)if(a||b||c)off.push([a,b,c]);
+  let iter=0;status('Building the 4D shape','Distance field');await tick();
+  while(qn>0){const v=Q[qh];qh=(qh+1)%NV;qn--;inQ[v]=0;const p=near[v];
+    const i=v%nx,j=((v/nx)|0)%ny,k=(v/(nx*ny))|0;const px=P[p*3],py=P[p*3+1],pz=P[p*3+2];
+    for(const o of off){const ii=i+o[0],jj=j+o[1],kk=k+o[2];if(ii<0||jj<0||kk<0||ii>=nx||jj>=ny||kk>=nz)continue;
+      const u=ii+nx*(jj+ny*kk);const dx=lo[0]+ii*res-px,dy=lo[1]+jj*res-py,dz=lo[2]+kk*res-pz;const d=Math.sqrt(dx*dx+dy*dy+dz*dz);
+      if(d<dist[u]-1e-7){dist[u]=d;near[u]=p;push(u)}}
+    if((++iter&1048575)===0){status('Building the 4D shape','Distance field');await tick()}}
+  // outside = free voxels reachable from the grid border (robust to flipped normals)
+  status('Building the 4D shape','Inside and outside');await tick();
+  const th=1.2*res,outv=new Uint8Array(NV);qh=0;qt=0;qn=0;
+  const free=v=>dist[v]>th;
+  for(let v=0;v<NV;v++){const i=v%nx,j=((v/nx)|0)%ny,k=(v/(nx*ny))|0;if((i===0||j===0||k===0||i===nx-1||j===ny-1||k===nz-1)&&free(v)){outv[v]=1;Q[qt++]=v;qn++}}
+  qt%=NV;const o6=[1,-1,nx,-nx,nx*ny,-nx*ny];
+  while(qn>0){const v=Q[qh];qh=(qh+1)%NV;qn--;const i=v%nx,j=((v/nx)|0)%ny,k=(v/(nx*ny))|0;
+    for(let t=0;t<6;t++){if((t===0&&i===nx-1)||(t===1&&i===0)||(t===2&&j===ny-1)||(t===3&&j===0)||(t===4&&k===nz-1)||(t===5&&k===0))continue;
+      const u=v+o6[t];if(!outv[u]&&free(u)){outv[u]=1;Q[qt]=u;qt=(qt+1)%NV;qn++}}}
+  let nIn=0;for(let v=0;v<NV;v++)if(free(v)&&!outv[v])nIn++;
+  const leaky=nIn===0;
+  const sdf=new Float32Array(NV);
+  for(let v=0;v<NV;v++){const p=near[v],i=v%nx,j=((v/nx)|0)%ny,k=(v/(nx*ny))|0;
+    let sg;if(!leaky&&dist[v]>th)sg=outv[v]?1:-1;
+    else{const dx=lo[0]+i*res-P[p*3],dy=lo[1]+j*res-P[p*3+1],dz=lo[2]+k*res-P[p*3+2];sg=dx*Nn[p*3]+dy*Nn[p*3+1]+dz*Nn[p*3+2]>=0?1:-1;
+      if(!leaky){let a=0,b=0;for(let t=0;t<6;t++){const u=v+o6[t];if(u<0||u>=NV||!free(u))continue;if(outv[u])a++;else b++}if(a&&!b)sg=1;else if(b&&!a)sg=-1}}
+    sdf[v]=sg*dist[v]}
+  // light gaussian blur (sigma 0.8 voxel)
+  const kw=[-2,-1,0,1,2].map(x=>Math.exp(-x*x/1.28));const ks=kw.reduce((a,b)=>a+b);for(let i=0;i<5;i++)kw[i]/=ks;
+  let A=sdf,B=new Float32Array(NV);const st=[1,nx,nx*ny],dm=[nx,ny,nz];
+  for(let ax=0;ax<3;ax++){for(let v=0;v<NV;v++){const c=ax===0?v%nx:ax===1?((v/nx)|0)%ny:(v/(nx*ny))|0;let s=0;
+      for(let t=-2;t<=2;t++){const cc=Math.min(dm[ax]-1,Math.max(0,c+t));s+=kw[t+2]*A[v+(cc-c)*st[ax]]}B[v]=s}[A,B]=[B,A]}
+  const data=new Uint8Array(NV*4);
+  for(let v=0;v<NV;v++){const p=near[v];data[v*4]=C[p*3];data[v*4+1]=C[p*3+1];data[v*4+2]=C[p*3+2];
+    data[v*4+3]=Math.round(Math.max(0,Math.min(1,(A[v]+0.3)/0.9))*255)}
+  const V={dims,lo,hi,cent:parts.cent,drift:parts.drift,erode:parts.erode};
+  return {V,data,sdf:A,res};
+}
+// the left cloud: surface points of many w-layers
+async function buildCloud(S,parts,vol,layers,per){
+  const {V,sdf}=vol,[nx,ny,nz]=V.dims,lo=V.lo,res=(V.hi[0]-V.lo[0])/(nx-1);
+  const samp=(x,y,z)=>{const fx=(x-lo[0])/res,fy=(y-lo[1])/res,fz=(z-lo[2])/res;
+    if(fx<0||fy<0||fz<0||fx>=nx-1||fy>=ny-1||fz>=nz-1)return 1;
+    const i=fx|0,j=fy|0,k=fz|0,a=fx-i,b=fy-j,c=fz-k,o=i+nx*(j+ny*k),sx=1,sy=nx,sz=nx*ny;
+    return ((sdf[o]*(1-a)+sdf[o+sx]*a)*(1-b)+(sdf[o+sy]*(1-a)+sdf[o+sx+sy]*a)*b)*(1-c)+((sdf[o+sz]*(1-a)+sdf[o+sx+sz]*a)*(1-b)+(sdf[o+sy+sz]*(1-a)+sdf[o+sx+sy+sz]*a)*b)*c};
+  const W=(x,y,z)=>{let sw=0,se=0,D=[0,0,0];for(let k=0;k<7;k++){const c=parts.cent[k],d2=(x-c[0])**2+(y-c[1])**2+(z-c[2])**2,kk=Math.exp(-d2/0.2048);sw+=kk;se+=kk*parts.erode[k];for(let d=0;d<3;d++)D[d]+=kk*parts.drift[k][d]}
+    sw+=1e-12;return {D:D.map(v=>v/sw),E:se/sw}};
+  const out=new Float32Array(layers*per*4);let m=0;const r=rng(3),tol=0.6*res+0.012;
+  for(let L=0;L<layers;L++){const w=-1.05+2.1*L/(layers-1),g=w*Math.abs(w)*0.75+0.2*w;
+    for(let s=0;s<per;s++){const i=Math.floor(r()*S.n);const px=S.P[i*3],py=S.P[i*3+1],pz=S.P[i*3+2],qx=S.N[i*3],qy=S.N[i*3+1],qz=S.N[i*3+2];
+      let x=px,y=py,z=pz,res_;
+      for(let it=0;it<3;it++){res_=W(x,y,z);const e=w*w*0.16*res_.E;x=px-qx*e+res_.D[0]*g;y=py-qy*e+res_.D[1]*g;z=pz-qz*e+res_.D[2]*g}
+      res_=W(x,y,z);const sv=samp(x-res_.D[0]*g,y-res_.D[1]*g,z-res_.D[2]*g)+w*w*0.16*res_.E;
+      if(Math.abs(sv)<tol){out[m++]=x;out[m++]=y;out[m++]=z;out[m++]=w}}
+    if((L&7)===0){status('Building the 4D shape','Projection layers '+Math.round(L/layers*100)+'%');await tick()}}
+  return out.slice(0,m);
+}
+const items=[{name:'The Cat',kind:'cat',thumb:window.THUMB_CAT||null},{name:'The Human',kind:'preset',src:['human_v1.js','human_v2.js','human_c.js'],key:'HUMAN',thumb:window.THUMB_HUMAN||null},{name:'The First Plant-Eater',kind:'preset',src:['plant_v1.js','plant_v2.js','plant_c.js'],key:'PLANT',title:'The First Plant-Eater in 4D',thumb:window.THUMB_PLANT||null}];let sel=0;
+window.__items=items;
+function renderGallery(){const row=$('row');row.innerHTML='';
+  items.forEach((it,i)=>{const b=document.createElement('button');b.className='card'+(i===sel?' on':'');
+    b.innerHTML='<span class="th"'+(it.thumb?' style="background-image:url('+it.thumb+')"':'')+'>'+(it.thumb?'':'…')+'</span><span class="no">NO. '+String(i+1).padStart(2,'0')+'</span><span class="nm"></span>';
+    b.querySelector('.nm').textContent=it.name;b.onclick=()=>{if(i!==sel)selectItem(i)};row.appendChild(b)})}
+function snapThumb(it){R=[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1];const T=[];for(let c=0;c<4;c++)for(let r=0;r<4;r++)T.push(R[r*4+c]);
+  rayR.draw(T);try{it.thumb=cv.toDataURL('image/jpeg',0.82)}catch(e){}}
+async function selectItem(i){setAuto(false);sel=i;const it=items[i];
+  if(adjusting)setAdjust(false);
+  if(it.kind==='preset'&&!it.V){status('Loading','');for(const f of it.src)await loadScript(f);const P=window[it.key+'_V'];
+    it.V=P.V;it.data=(()=>{const a=b64(window[it.key+'_D1']),b=b64(window[it.key+'_D2']);const o=new Uint8Array(a.length+b.length);o.set(a);o.set(b,a.length);return o})();it.cloud=new Float32Array(b64(window[it.key+'_C']).buffer);if(P.view)it.view=P.view}
+  if(it.kind==='cat'){await showCat();$('title').textContent='The 4D Cat'}
+  else{applyVolume(it.V,it.data);setCloud(it.cloud);$('title').textContent=it.title||(it.kind==='preset'?'The 4D '+it.name.replace(/^The /,''):it.name+' in 4D')}
+  if(!it.view)it.view=it.kind==='cat'?[0.55,-0.32]:[0.0,-0.12];setView(it.view[0],it.view[1]);
+  document.title=$('title').textContent;
+  R=[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1];
+  if(!it.thumb)snapThumb(it);
+  hideStatus();dirty=true;renderGallery()}
+async function handleFile(file){
+  if(!file)return;setAuto(false);
+  try{
+    status('Reading '+file.name,'');await tick();
+    const parts=await parseFile(file);
+    status('Sampling the surface','');await tick();
+    const S=await sampleSurface(parts,260000);const pp=makeParts(S);
+    const vol=await buildVolume(S,pp,0.018);
+    const cloud=await buildCloud(S,pp,vol,80,3500);
+    const nMine=items.filter(x=>x.kind==='model').length;let name='My 3D Object'+(nMine?' '+(nMine+1):'');
+    items.push({name,kind:'model',V:vol.V,data:vol.data,cloud,thumb:null});
+    await selectItem(items.length-1);setAdjust(true);
+    $('row').scrollLeft=1e6;
+  }catch(e){console.error(e);status('Could not read this file',(e&&e.message)||'Please upload the original, uncompressed GLB file');setTimeout(hideStatus,4000)}
+}
+$('file').addEventListener('change',e=>{handleFile(e.target.files[0]);e.target.value=''});
+document.addEventListener('dragover',e=>{e.preventDefault();document.body.classList.add('dragging')});
+document.addEventListener('dragleave',e=>{if(e.target===document.documentElement||e.target===document.body)document.body.classList.remove('dragging')});
+document.addEventListener('drop',e=>{e.preventDefault();document.body.classList.remove('dragging');handleFile(e.dataTransfer.files[0])});
+
+(async()=>{size();ready=true;await selectItem(0);})();
+</script>
+</body>
+</html>
